@@ -174,7 +174,7 @@ k8s-pod-get-status-phase: ### Get the pod status phase - return: [phase name]
 		--output=json \
 	| make -s docker-run-tools CMD="jq -r '.status.phase'" | tr '[:upper:]' '[:lower:]' | tr -d '\n'
 
-k8s-job-wait-to-complete: ### Wait for the job to complete - optional SECONDS=[number of seconds, defaults to 60]
+k8s-job-wait-to-complete: ### Wait for the job to complete - optional SECONDS=[number of seconds, defaults to 60], K8S_JOB_NAME=[job name]
 	seconds=$(or $(SECONDS), 60)
 	echo "Waiting for the job to complete in $$seconds seconds"
 	sleep 10 && kubectl logs --follow --namespace=$(K8S_NAMESPACE) $$(make k8s-job-get-pod-name) &
@@ -206,12 +206,19 @@ k8s-job-get-name: ### Get the name of the job - mandatory: PROFILE=[name]; retur
 		--selector "env=$(ENVIRONMENT)" \
 		--output jsonpath='{.items..metadata.name}'
 
-k8s-job-get-pod-name: ### Get the name of the job pod - mandatory: PROFILE=[name]; return: [pod name]
+k8s-job-get-pod-name: ### Get the name of the job pod - mandatory: PROFILE=[name]; optional K8S_JOB_NAME=[job name]; return: [pod name]
 	eval "$$(make k8s-kubeconfig-export-variables)"
-	kubectl get pods \
-		--namespace=$(K8S_NAMESPACE) \
-		--selector "env=$(ENVIRONMENT)" \
-		--output jsonpath='{.items..metadata.name}'
+	if [ "$(K8S_JOB_NAME)" == "" ]; then
+		kubectl get pods \
+			--namespace=$(K8S_NAMESPACE) \
+			--selector "env=$(ENVIRONMENT)" \
+			--output jsonpath='{.items..metadata.name}'
+	else
+			--namespace=$(K8S_NAMESPACE) \
+			--selector "env=$(ENVIRONMENT)" \
+			--output jsonpath='{.items..metadata.name}\
+			| grep -E -o "$(K8S_JOB_NAME).[-a-z0-9]+'
+	fi
 
 k8s-job-has-completed: ### Show whether the job completed - return: [true|""]
 	eval "$$(make k8s-kubeconfig-export-variables)"
@@ -226,6 +233,19 @@ k8s-job-has-failed: ### Show whether the job failed - return: [true|""]
 		--namespace=$(K8S_NAMESPACE) \
 		--output jsonpath='{.status.conditions[?(@.type=="Failed")].status}' \
 	| tr '[:upper:]' '[:lower:]' | tr -d '\n'
+
+k8s-run-cronjob-as-job: ### run a cronjob as a job (now) - mandatory: K8S_CRONJOB_NAME=[name], PROFILE=[name]; optional K8S_JOB_NAME=[job name]
+	# set up
+	eval "$$(make aws-assume-role-export-variables)"
+	make k8s-kubeconfig-get
+	eval "$$(make k8s-kubeconfig-export-variables)"
+	# create
+	kubectl delete job -n=$(K8S_APP_NAMESPACE) $(K8S_CRONJOB_NAME) ||:
+	kubectl create job -n $(K8S_APP_NAMESPACE) --from=cronjob/$(K8S_CRONJOB_NAME) $(K8S_CRONJOB_NAME)
+	make k8s-job K8S_JOB_NAMESPACE=$(K8S_APP_NAMESPACE) K8S_JOB_NAME=$(K8S_CRONJOB_NAME)
+
+k8s-get-token: ### Gets token for k8s dashboard
+	make -s aws-eks-get-token
 
 # ==============================================================================
 
@@ -391,6 +411,7 @@ k8s-job: ### Show status of jobs - mandatory: PROFILE=[name]
 	k8s-job-tester-has-completed \
 	k8s-job-tester-is-running \
 	k8s-job-tester-wait-to-complete \
+	k8s-get-token \
 	k8s-kubeconfig-export \
 	k8s-kubeconfig-export-variables \
 	k8s-log \
